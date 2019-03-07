@@ -26,6 +26,7 @@
       "creationSource" : "[concat(parameters('generatorCode'), '-', variables('{{.Name}}VMNamePrefix'))]",
       "resourceNameSuffix" : "[variables('winResourceNamePrefix')]",
       "orchestrator" : "[variables('orchestratorNameVersionTag')]",
+      "aksEngineVersion" : "[parameters('aksEngineVersion')]",
       "poolName" : "{{.Name}}"
     },
     "location": "[variables('location')]",
@@ -54,11 +55,18 @@
     },
     "properties": {
       "singlePlacementGroup": {{UseSinglePlacementGroup .}},
-      "overprovision": false,
+      "overprovision": {{IsVMSSOverProvisioningEnabled}},
+      {{if IsVMSSOverProvisioningEnabled}}
+      "doNotRunExtensionsOnOverprovisionedVMs": true,
+      {{end}}
       "upgradePolicy": {
         "mode": "Manual"
       },
       "virtualMachineProfile": {
+        {{if .IsLowPriorityScaleSet}}
+          "priority": "[variables('{{.Name}}ScaleSetPriority')]",
+          "evictionPolicy": "[variables('{{.Name}}ScaleSetEvictionPolicy')]",
+        {{end}}
         "networkProfile": {
           "networkInterfaceConfigurations": [
             {
@@ -98,7 +106,10 @@
           "computerNamePrefix": "[variables('{{.Name}}VMNamePrefix')]",
           {{GetKubernetesWindowsAgentCustomData .}}
           "adminUsername": "[parameters('windowsAdminUsername')]",
-          "adminPassword": "[parameters('windowsAdminPassword')]"
+          "adminPassword": "[parameters('windowsAdminPassword')]",
+          "windowsConfiguration": {
+            "enableAutomaticUpdates": {{WindowsAutomaticUpdateEnabled}}
+          }
         },
         "storageProfile": {
           {{GetDataDisks .}}
@@ -133,8 +144,7 @@
             }
             {{if UseAksExtension}}
             ,{
-              "name": "[concat(variables('{{.Name}}VMNamePrefix'), '-computeAksLinuxBilling')]",
-              "location": "[variables('location')]",
+              "name": "[concat(variables('{{.Name}}VMNamePrefix'), '-computeAksWindowsBilling')]",
               "properties": {
                 "publisher": "Microsoft.AKS",
                 "type": "Compute.AKS-Engine.Windows.Billing",

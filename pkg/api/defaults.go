@@ -26,6 +26,11 @@ import (
 func (cs *ContainerService) SetPropertiesDefaults(isUpgrade, isScale bool) (bool, error) {
 	properties := cs.Properties
 
+	// Set custom cloud profile defaults if this cluster configuration has custom cloud profile
+	if cs.Properties.CustomCloudProfile != nil {
+		properties.setCustomCloudProfileDefaults()
+	}
+
 	cs.setOrchestratorDefaults(isUpgrade || isScale)
 
 	// Set master profile defaults if this cluster configuration includes master node(s)
@@ -51,7 +56,7 @@ func (cs *ContainerService) SetPropertiesDefaults(isUpgrade, isScale bool) (bool
 		properties.setHostedMasterProfileDefaults()
 	}
 
-	certsGenerated, _, e := properties.setDefaultCerts()
+	certsGenerated, _, e := cs.setDefaultCerts()
 	if e != nil {
 		return false, e
 	}
@@ -95,7 +100,7 @@ func (cs *ContainerService) setOrchestratorDefaults(isUpdate bool) {
 				o.KubernetesConfig.NetworkPlugin = NetworkPluginKubenet
 			}
 		case NetworkPolicyCilium:
-			o.KubernetesConfig.NetworkPlugin = NetworkPolicyCilium
+			o.KubernetesConfig.NetworkPlugin = NetworkPluginCilium
 		}
 
 		if o.KubernetesConfig.KubernetesImageBase == "" {
@@ -104,6 +109,7 @@ func (cs *ContainerService) setOrchestratorDefaults(isUpdate bool) {
 		if o.KubernetesConfig.EtcdVersion == "" {
 			o.KubernetesConfig.EtcdVersion = DefaultEtcdVersion
 		}
+
 		if a.HasWindows() {
 			if o.KubernetesConfig.NetworkPlugin == "" {
 				o.KubernetesConfig.NetworkPlugin = DefaultNetworkPluginWindows
@@ -115,6 +121,16 @@ func (cs *ContainerService) setOrchestratorDefaults(isUpdate bool) {
 		}
 		if o.KubernetesConfig.ContainerRuntime == "" {
 			o.KubernetesConfig.ContainerRuntime = DefaultContainerRuntime
+		}
+		switch o.KubernetesConfig.ContainerRuntime {
+		case Docker:
+			if o.KubernetesConfig.MobyVersion == "" {
+				o.KubernetesConfig.MobyVersion = DefaultMobyVersion
+			}
+		case Containerd, ClearContainers, KataContainers:
+			if o.KubernetesConfig.ContainerdVersion == "" {
+				o.KubernetesConfig.ContainerdVersion = DefaultContainerdVersion
+			}
 		}
 		if o.KubernetesConfig.ClusterSubnet == "" {
 			if o.IsAzureCNI() {
@@ -229,6 +245,9 @@ func (cs *ContainerService) setOrchestratorDefaults(isUpdate bool) {
 
 		if a.OrchestratorProfile.KubernetesConfig.MaximumLoadBalancerRuleCount == 0 {
 			a.OrchestratorProfile.KubernetesConfig.MaximumLoadBalancerRuleCount = DefaultMaximumLoadBalancerRuleCount
+		}
+		if a.OrchestratorProfile.KubernetesConfig.ProxyMode == "" {
+			a.OrchestratorProfile.KubernetesConfig.ProxyMode = DefaultKubeProxyMode
 		}
 
 		// Configure addons
@@ -431,6 +450,10 @@ func (p *Properties) setAgentProfileDefaults(isUpgrade, isScale bool) {
 			profile.AcceleratedNetworkingEnabledWindows = to.BoolPtr(DefaultAcceleratedNetworkingWindowsEnabled && !isUpgrade && !isScale && helpers.AcceleratedNetworkingSupported(profile.VMSize))
 		}
 
+		if profile.VMSSOverProvisioningEnabled == nil {
+			profile.VMSSOverProvisioningEnabled = to.BoolPtr(DefaultVMSSOverProvisioningEnabled && !isUpgrade && !isScale)
+		}
+
 		if profile.OSType != Windows {
 			if profile.Distro == "" {
 				if p.OrchestratorProfile.IsKubernetes() {
@@ -467,6 +490,10 @@ func (p *Properties) setAgentProfileDefaults(isUpgrade, isScale bool) {
 				agentPoolMaxPods, _ := strconv.Atoi(profile.KubernetesConfig.KubeletConfig["--max-pods"])
 				profile.IPAddressCount += agentPoolMaxPods
 			}
+		}
+
+		if profile.PreserveNodesProperties == nil {
+			profile.PreserveNodesProperties = to.BoolPtr(DefaultPreserveNodesProperties)
 		}
 	}
 }
@@ -505,7 +532,8 @@ func (p *Properties) setHostedMasterProfileDefaults() {
 	p.HostedMasterProfile.Subnet = DefaultKubernetesMasterSubnet
 }
 
-func (p *Properties) setDefaultCerts() (bool, []net.IP, error) {
+func (cs *ContainerService) setDefaultCerts() (bool, []net.IP, error) {
+	p := cs.Properties
 	if p.MasterProfile == nil || p.OrchestratorProfile.OrchestratorType != Kubernetes {
 		return false, nil, nil
 	}
@@ -517,21 +545,28 @@ func (p *Properties) setDefaultCerts() (bool, []net.IP, error) {
 	}
 
 	var azureProdFQDNs []string
-	for _, location := range helpers.GetAzureLocations() {
-		azureProdFQDNs = append(azureProdFQDNs, FormatAzureProdFQDNByLocation(p.MasterProfile.DNSPrefix, location))
+	for _, location := range cs.GetLocations() {
+		azureProdFQDNs = append(azureProdFQDNs, FormatProdFQDNByLocation(p.MasterProfile.DNSPrefix, location, p.GetCustomCloudName()))
 	}
 
 	masterExtraFQDNs := append(azureProdFQDNs, p.MasterProfile.SubjectAltNames...)
+	masterExtraFQDNs = append(masterExtraFQDNs, "localhost")
 	firstMasterIP := net.ParseIP(p.MasterProfile.FirstConsecutiveStaticIP).To4()
+	localhostIP := net.ParseIP("127.0.0.1").To4()
 
 	if firstMasterIP == nil {
 		return false, nil, errors.Errorf("MasterProfile.FirstConsecutiveStaticIP '%s' is an invalid IP address", p.MasterProfile.FirstConsecutiveStaticIP)
 	}
 
-	ips := []net.IP{firstMasterIP}
-	// Add the Internal Loadbalancer IP which is always at at p known offset from the firstMasterIP
-	ips = append(ips, net.IP{firstMasterIP[0], firstMasterIP[1], firstMasterIP[2], firstMasterIP[3] + byte(DefaultInternalLbStaticIPOffset)})
+	ips := []net.IP{firstMasterIP, localhostIP}
+
 	// Include the Internal load balancer as well
+	if p.MasterProfile.IsVirtualMachineScaleSets() {
+		ips = append(ips, net.IP{firstMasterIP[0], firstMasterIP[1], byte(255), byte(DefaultInternalLbStaticIPOffset)})
+	} else {
+		// Add the Internal Loadbalancer IP which is always at p known offset from the firstMasterIP
+		ips = append(ips, net.IP{firstMasterIP[0], firstMasterIP[1], firstMasterIP[2], firstMasterIP[3] + byte(DefaultInternalLbStaticIPOffset)})
+	}
 
 	var offsetMultiplier int
 	if p.MasterProfile.IsVirtualMachineScaleSets() {

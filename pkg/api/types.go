@@ -4,8 +4,10 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"math/rand"
 	"net"
 	neturl "net/url"
@@ -13,15 +15,16 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Azure/aks-engine/pkg/api/agentPoolOnlyApi/v20170831"
-	"github.com/Azure/aks-engine/pkg/api/agentPoolOnlyApi/v20180331"
+	v20170831 "github.com/Azure/aks-engine/pkg/api/agentPoolOnlyApi/v20170831"
+	v20180331 "github.com/Azure/aks-engine/pkg/api/agentPoolOnlyApi/v20180331"
 	"github.com/Azure/aks-engine/pkg/api/common"
-	"github.com/Azure/aks-engine/pkg/api/v20160330"
-	"github.com/Azure/aks-engine/pkg/api/v20160930"
-	"github.com/Azure/aks-engine/pkg/api/v20170131"
-	"github.com/Azure/aks-engine/pkg/api/v20170701"
+	v20160330 "github.com/Azure/aks-engine/pkg/api/v20160330"
+	v20160930 "github.com/Azure/aks-engine/pkg/api/v20160930"
+	v20170131 "github.com/Azure/aks-engine/pkg/api/v20170131"
+	v20170701 "github.com/Azure/aks-engine/pkg/api/v20170701"
 	"github.com/Azure/aks-engine/pkg/api/vlabs"
 	"github.com/Azure/aks-engine/pkg/helpers"
+	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/blang/semver"
 )
@@ -54,6 +57,19 @@ type ContainerService struct {
 	Properties *Properties `json:"properties,omitempty"`
 }
 
+// AgentPoolResource complies with the ARM model of
+// agentpool resource definition in a JSON template.
+type AgentPoolResource struct {
+	ID       string                `json:"id"`
+	Location string                `json:"location"`
+	Name     string                `json:"name"`
+	Plan     *ResourcePurchasePlan `json:"plan,omitempty"`
+	Tags     map[string]string     `json:"tags"`
+	Type     string                `json:"type"`
+
+	Properties *AgentPoolProfile `json:"properties,omitempty"`
+}
+
 // Properties represents the AKS cluster definition
 type Properties struct {
 	ClusterID               string
@@ -73,6 +89,7 @@ type Properties struct {
 	HostedMasterProfile     *HostedMasterProfile     `json:"hostedMasterProfile,omitempty"`
 	AddonProfiles           map[string]AddonProfile  `json:"addonProfiles,omitempty"`
 	FeatureFlags            *FeatureFlags            `json:"featureFlags,omitempty"`
+	CustomCloudProfile      *CustomCloudProfile      `json:"customCloudProfile,omitempty"`
 }
 
 // ClusterMetadata represents the metadata of the AKS cluster.
@@ -180,15 +197,17 @@ type CustomNodesDNS struct {
 
 // WindowsProfile represents the windows parameters passed to the cluster
 type WindowsProfile struct {
-	AdminUsername         string            `json:"adminUsername"`
-	AdminPassword         string            `json:"adminPassword" conform:"redact"`
-	ImageVersion          string            `json:"imageVersion"`
-	WindowsImageSourceURL string            `json:"windowsImageSourceURL"`
-	WindowsPublisher      string            `json:"windowsPublisher"`
-	WindowsOffer          string            `json:"windowsOffer"`
-	WindowsSku            string            `json:"windowsSku"`
-	WindowsDockerVersion  string            `json:"windowsDockerVersion"`
-	Secrets               []KeyVaultSecrets `json:"secrets,omitempty"`
+	AdminUsername          string            `json:"adminUsername"`
+	AdminPassword          string            `json:"adminPassword" conform:"redact"`
+	ImageVersion           string            `json:"imageVersion"`
+	WindowsImageSourceURL  string            `json:"windowsImageSourceURL"`
+	WindowsPublisher       string            `json:"windowsPublisher"`
+	WindowsOffer           string            `json:"windowsOffer"`
+	WindowsSku             string            `json:"windowsSku"`
+	WindowsDockerVersion   string            `json:"windowsDockerVersion"`
+	Secrets                []KeyVaultSecrets `json:"secrets,omitempty"`
+	SSHEnabled             bool              `json:"sshEnabled,omitempty"`
+	EnableAutomaticUpdates *bool             `json:"enableAutomaticUpdates,omitempty"`
 }
 
 // ProvisioningState represents the current state of container service resource.
@@ -308,6 +327,17 @@ type KubernetesConfigDeprecated struct {
 	CtrlMgrRouteReconciliationPeriod string `json:"ctrlMgrRouteReconciliationPeriod,omitempty"`
 }
 
+// KubeProxyMode is for iptables and ipvs (and future others)
+type KubeProxyMode string
+
+// We currently support ipvs and iptables
+const (
+	// KubeProxyModeIPTables is used to set the kube-proxy to iptables mode
+	KubeProxyModeIPTables KubeProxyMode = "iptables"
+	// KubeProxyModeIPVS is used to set the kube-proxy to ipvs mode
+	KubeProxyModeIPVS KubeProxyMode = "ipvs"
+)
+
 // KubernetesConfig contains the Kubernetes config structure, containing
 // Kubernetes specific configuration
 type KubernetesConfig struct {
@@ -325,7 +355,9 @@ type KubernetesConfig struct {
 	UserAssignedClientID             string            `json:"userAssignedClientID,omitempty"` //Note: cannot be provided in config. Used *only* for transferring this to azure.json.
 	CustomHyperkubeImage             string            `json:"customHyperkubeImage,omitempty"`
 	DockerEngineVersion              string            `json:"dockerEngineVersion,omitempty"` // Deprecated
-	CustomCcmImage                   string            `json:"customCcmImage,omitempty"`      // Image for cloud-controller-manager
+	MobyVersion                      string            `json:"mobyVersion,omitempty"`
+	ContainerdVersion                string            `json:"containerdVersion,omitempty"`
+	CustomCcmImage                   string            `json:"customCcmImage,omitempty"` // Image for cloud-controller-manager
 	UseCloudControllerManager        *bool             `json:"useCloudControllerManager,omitempty"`
 	CustomWindowsPackageURL          string            `json:"customWindowsPackageURL,omitempty"`
 	WindowsNodeBinariesURL           string            `json:"windowsNodeBinariesURL,omitempty"`
@@ -370,6 +402,8 @@ type KubernetesConfig struct {
 	AzureCNIURLWindows               string            `json:"azureCNIURLWindows,omitempty"`
 	KeyVaultSku                      string            `json:"keyVaultSku,omitempty"`
 	MaximumLoadBalancerRuleCount     int               `json:"maximumLoadBalancerRuleCount,omitempty"`
+	ProxyMode                        KubeProxyMode     `json:"kubeProxyMode,omitempty"`
+	PrivateAzureRegistryServer       string            `json:"privateAzureRegistryServer,omitempty"`
 }
 
 // CustomFile has source as the full absolute source path to a file and dest
@@ -470,6 +504,7 @@ type AgentPoolProfile struct {
 	DNSPrefix                           string               `json:"dnsPrefix,omitempty"`
 	OSType                              OSType               `json:"osType,omitempty"`
 	Ports                               []int                `json:"ports,omitempty"`
+	ProvisioningState                   ProvisioningState    `json:"provisioningState,omitempty"`
 	AvailabilityProfile                 string               `json:"availabilityProfile"`
 	ScaleSetPriority                    string               `json:"scaleSetPriority,omitempty"`
 	ScaleSetEvictionPolicy              string               `json:"scaleSetEvictionPolicy,omitempty"`
@@ -482,11 +517,13 @@ type AgentPoolProfile struct {
 	Role                                AgentPoolProfileRole `json:"role,omitempty"`
 	AcceleratedNetworkingEnabled        *bool                `json:"acceleratedNetworkingEnabled,omitempty"`
 	AcceleratedNetworkingEnabledWindows *bool                `json:"acceleratedNetworkingEnabledWindows,omitempty"`
+	VMSSOverProvisioningEnabled         *bool                `json:"vmssOverProvisioningEnabled,omitempty"`
 	FQDN                                string               `json:"fqdn,omitempty"`
 	CustomNodeLabels                    map[string]string    `json:"customNodeLabels,omitempty"`
 	PreprovisionExtension               *Extension           `json:"preProvisionExtension"`
 	Extensions                          []Extension          `json:"extensions"`
 	KubernetesConfig                    *KubernetesConfig    `json:"kubernetesConfig,omitempty"`
+	OrchestratorVersion                 string               `json:"orchestratorVersion"`
 	ImageRef                            *ImageReference      `json:"imageReference,omitempty"`
 	MaxCount                            *int                 `json:"maxCount,omitempty"`
 	MinCount                            *int                 `json:"minCount,omitempty"`
@@ -494,6 +531,7 @@ type AgentPoolProfile struct {
 	AvailabilityZones                   []string             `json:"availabilityZones,omitempty"`
 	SinglePlacementGroup                *bool                `json:"singlePlacementGroup,omitempty"`
 	VnetCidrs                           []string             `json:"vnetCidrs,omitempty"`
+	PreserveNodesProperties             *bool                `json:"preserveNodesProperties,omitempty"`
 }
 
 // AgentPoolProfileRole represents an agent role
@@ -669,6 +707,14 @@ type V20180331ARMManagedContainerService struct {
 	*v20180331.ManagedCluster
 }
 
+// CustomCloudProfile represents the custom cloud profile
+type CustomCloudProfile struct {
+	Environment                *azure.Environment          `json:"environment,omitempty"`
+	AzureEnvironmentSpecConfig *AzureEnvironmentSpecConfig `json:"azureEnvironmentSpecConfig,omitempty"`
+	IdentitySystem             string                      `json:"identitySystem,omitempty"`
+	AuthenticationMethod       string                      `json:"authenticationMethod,omitempty"`
+}
+
 // HasWindows returns true if the cluster contains windows
 func (p *Properties) HasWindows() bool {
 	for _, agentPoolProfile := range p.AgentPoolProfiles {
@@ -771,6 +817,26 @@ func (p *Properties) GetAgentVMPrefix(a *AgentPoolProfile) string {
 		}
 	}
 	return vmPrefix
+}
+
+// AnyAgentUsesVirtualMachineScaleSets checks whether any of the agents in the AgentPool use VMSS or not
+func (p *Properties) AnyAgentUsesVirtualMachineScaleSets() bool {
+	for _, agentProfile := range p.AgentPoolProfiles {
+		if agentProfile.IsVirtualMachineScaleSets() {
+			return true
+		}
+	}
+	return false
+}
+
+// AnyAgentUsesAvailabilitySets checks whether any of the agents in the AgentPool use VMAS or not
+func (p *Properties) AnyAgentUsesAvailabilitySets() bool {
+	for _, agentProfile := range p.AgentPoolProfiles {
+		if agentProfile.IsAvailabilitySets() {
+			return true
+		}
+	}
+	return false
 }
 
 // GetMasterVMPrefix returns the prefix of master VMs
@@ -915,12 +981,15 @@ func (p *Properties) GetClusterMetadata() *ClusterMetadata {
 
 // HasZonesForAllAgentPools returns true if all of the agent pools have zones
 func (p *Properties) HasZonesForAllAgentPools() bool {
-	for _, ap := range p.AgentPoolProfiles {
-		if !ap.HasAvailabilityZones() {
-			return false
+	if len(p.AgentPoolProfiles) > 0 {
+		for _, ap := range p.AgentPoolProfiles {
+			if !ap.HasAvailabilityZones() {
+				return false
+			}
 		}
+		return true
 	}
-	return true
+	return false
 }
 
 // HasAvailabilityZones returns true if the cluster contains a profile with zones
@@ -961,6 +1030,15 @@ func (p *Properties) GetAzureCNICidr() string {
 		masqCNIIP = DefaultCNICIDR
 	}
 	return masqCNIIP
+}
+
+// GetMasterFQDN returns the master FQDN.
+func (p *Properties) GetMasterFQDN() string {
+	if p.IsHostedMasterProfile() {
+		return p.HostedMasterProfile.FQDN
+	}
+
+	return p.MasterProfile.FQDN
 }
 
 // IsCustomVNET returns true if the customer brought their own VNET
@@ -1113,6 +1191,14 @@ func (w *WindowsProfile) GetWindowsSku() string {
 	return KubernetesDefaultWindowsSku
 }
 
+// GetEnableWindowsUpdate gets the flag for enable windows update or returns the default value
+func (w *WindowsProfile) GetEnableWindowsUpdate() bool {
+	if w.EnableAutomaticUpdates != nil {
+		return *w.EnableAutomaticUpdates
+	}
+	return DefaultEnableAutomaticUpdates
+}
+
 // HasSecrets returns true if the customer specified secrets to install
 func (l *LinuxProfile) HasSecrets() bool {
 	return len(l.Secrets) > 0
@@ -1165,7 +1251,7 @@ func (o *OrchestratorProfile) IsAzureCNI() bool {
 func (o *OrchestratorProfile) RequireRouteTable() bool {
 	switch o.OrchestratorType {
 	case Kubernetes:
-		if o.IsAzureCNI() || "cilium" == o.KubernetesConfig.NetworkPolicy {
+		if o.IsAzureCNI() || NetworkPolicyCilium == o.KubernetesConfig.NetworkPolicy || "flannel" == o.KubernetesConfig.NetworkPlugin {
 			return false
 		}
 		return true
@@ -1279,7 +1365,7 @@ func (k *KubernetesConfig) IsDashboardEnabled() bool {
 
 // IsIPMasqAgentEnabled checks if the ip-masq-agent addon is enabled
 func (k *KubernetesConfig) IsIPMasqAgentEnabled() bool {
-	return k.isAddonEnabled(IPMASQAgentAddonName, IPMasqAgentAddonEnabled)
+	return k.isAddonEnabled(IPMASQAgentAddonName, (k.NetworkPlugin != NetworkPluginCilium && IPMasqAgentAddonEnabled))
 }
 
 // IsRBACEnabled checks if RBAC is enabled
@@ -1288,6 +1374,32 @@ func (k *KubernetesConfig) IsRBACEnabled() bool {
 		return to.Bool(k.EnableRbac)
 	}
 	return false
+}
+
+// UserAssignedIDEnabled checks if the user assigned ID is enabled or not.
+func (k *KubernetesConfig) UserAssignedIDEnabled() bool {
+	return k.UseManagedIdentity && k.UserAssignedID != ""
+}
+
+// UserAssignedClientIDEnabled checks if the user assigned client ID is enabled or not.
+func (k *KubernetesConfig) UserAssignedClientIDEnabled() bool {
+	return k.UseManagedIdentity && k.UserAssignedClientID != ""
+}
+
+// GetUserAssignedID returns the user assigned ID if it is enabled.
+func (k *KubernetesConfig) GetUserAssignedID() string {
+	if k.UserAssignedIDEnabled() {
+		return k.UserAssignedID
+	}
+	return ""
+}
+
+// GetUserAssignedClientID returns the user assigned client ID if it is enabled.
+func (k *KubernetesConfig) GetUserAssignedClientID() string {
+	if k.UserAssignedClientIDEnabled() {
+		return k.UserAssignedClientID
+	}
+	return ""
 }
 
 // IsNSeriesSKU returns true if the agent pool contains an N-series (NVIDIA GPU) VM
@@ -1310,6 +1422,75 @@ func (p *Properties) HasNSeriesSKU() bool {
 func (p *Properties) IsNVIDIADevicePluginEnabled() bool {
 	k := p.OrchestratorProfile.KubernetesConfig
 	return k.isAddonEnabled(NVIDIADevicePluginAddonName, getDefaultNVIDIADevicePluginEnabled(p))
+}
+
+// IsAzureStackCloud return true if the cloud is AzureStack
+func (p *Properties) IsAzureStackCloud() bool {
+	var cloudProfileName string
+	if p.CustomCloudProfile != nil {
+		if p.CustomCloudProfile.Environment != nil {
+			cloudProfileName = p.CustomCloudProfile.Environment.Name
+		}
+	}
+	return strings.EqualFold(cloudProfileName, AzureStackCloud)
+}
+
+// GetCustomEnvironmentJSON return the JSON format string for custom environment
+func (p *Properties) GetCustomEnvironmentJSON() string {
+	var environmentJSON string
+	if p.IsAzureStackCloud() {
+		bytes, err := json.Marshal(p.CustomCloudProfile.Environment)
+		if err != nil {
+			log.Fatalf("Could not serialize Environment object - %s", err.Error())
+		}
+		environmentJSON = string(bytes)
+		environmentJSON = strings.Replace(environmentJSON, "\"", "\\\"", -1)
+	}
+	return environmentJSON
+}
+
+// GetCustomCloudName returns name of environment if customCloudProfile is provided, returns empty string if customCloudProfile is empty.
+// Because customCloudProfile is empty for deployment is AzurePublicCloud, AzureChinaCloud,AzureGermanCloud,AzureUSGovernmentCloud,
+// the return value will be empty string for those clouds
+func (p *Properties) GetCustomCloudName() string {
+	var cloudProfileName string
+	if p.IsAzureStackCloud() {
+		cloudProfileName = p.CustomCloudProfile.Environment.Name
+	}
+	return cloudProfileName
+}
+
+// GetLocations returns all supported regions.
+// If AzureStackCloud, GetLocations provides the location of container service
+// If AzurePublicCloud, AzureChinaCloud,AzureGermanCloud or AzureUSGovernmentCloud, GetLocations provides all azure regions in prod.
+func (cs *ContainerService) GetLocations() []string {
+	var allLocations []string
+	if cs.Properties.IsAzureStackCloud() {
+		allLocations = []string{cs.Location}
+	} else {
+		allLocations = helpers.GetAzureLocations()
+	}
+	return allLocations
+}
+
+// GetCustomCloudAuthenticationMethod returns authentication method which k8s azure cloud provider will use
+// For AzurePublicCloud,AzureChinaCloud,azureGermanCloud,azureUSGovernmentCloud, it will be always be client_secret
+// For AzureStackCloud, if it is specifiled in configuration, the value will be used, if not ,the default value is client_secret.
+func (p *Properties) GetCustomCloudAuthenticationMethod() string {
+	if p.IsAzureStackCloud() {
+		return p.CustomCloudProfile.AuthenticationMethod
+	}
+	return ClientSecretAuthMethod
+}
+
+// GetCustomCloudIdentitySystem returns identity system method for azure stack.
+// For AzurePublicCloud,AzureChinaCloud,azureGermanCloud,azureUSGovernmentCloud, it will be always be AzureAD
+// For AzureStackCloud, if it is specifiled in configuration, the value will be used, if not ,the default value is AzureAD.
+func (p *Properties) GetCustomCloudIdentitySystem() string {
+	if p.IsAzureStackCloud() {
+		return p.CustomCloudProfile.IdentitySystem
+	}
+	return AzureADIdentitySystem
 }
 
 func getDefaultNVIDIADevicePluginEnabled(p *Properties) bool {
@@ -1339,7 +1520,7 @@ func (k *KubernetesConfig) PrivateJumpboxProvision() bool {
 // RequiresDocker returns if the kubernetes settings require docker binary to be installed.
 func (k *KubernetesConfig) RequiresDocker() bool {
 	runtime := strings.ToLower(k.ContainerRuntime)
-	return runtime == "docker" || runtime == ""
+	return runtime == Docker || runtime == ""
 }
 
 // SetCloudProviderBackoffDefaults sets default cloudprovider backoff config
@@ -1399,22 +1580,38 @@ func (f *FeatureFlags) IsFeatureEnabled(feature string) bool {
 	return false
 }
 
-//GetCloudSpecConfig returns the Kubernetes container images URL configurations based on the deploy target environment.
+// GetCloudSpecConfig returns the Kubernetes container images URL configurations based on the deploy target environment.
 //for example: if the target is the public azure, then the default container image url should be k8s.gcr.io/...
 //if the target is azure china, then the default container image should be mirror.azure.cn:5000/google_container/...
 func (cs *ContainerService) GetCloudSpecConfig() AzureEnvironmentSpecConfig {
-	targetEnv := helpers.GetCloudTargetEnv(cs.Location)
+	targetEnv := helpers.GetTargetEnv(cs.Location, cs.Properties.GetCustomCloudName())
 	return AzureCloudSpecEnvMap[targetEnv]
+}
+
+// IsAKSBillingEnabled checks if the AKS Billing Extension should be enabled for a cloud environment.
+func (cs *ContainerService) IsAKSBillingEnabled() bool {
+	cloudSpecConfig := cs.GetCloudSpecConfig()
+	return cloudSpecConfig.CloudName == AzurePublicCloud || cloudSpecConfig.CloudName == AzureChinaCloud
 }
 
 // GetAzureProdFQDN returns the formatted FQDN string for a given apimodel.
 func (cs *ContainerService) GetAzureProdFQDN() string {
-	return FormatAzureProdFQDNByLocation(cs.Properties.MasterProfile.DNSPrefix, cs.Location)
+	return FormatProdFQDNByLocation(cs.Properties.MasterProfile.DNSPrefix, cs.Location, cs.Properties.GetCustomCloudName())
 }
 
 // FormatAzureProdFQDNByLocation constructs an Azure prod fqdn
 func FormatAzureProdFQDNByLocation(fqdnPrefix string, location string) string {
 	targetEnv := helpers.GetCloudTargetEnv(location)
+	FQDNFormat := AzureCloudSpecEnvMap[targetEnv].EndpointConfig.ResourceManagerVMDNSSuffix
+	return fmt.Sprintf("%s.%s."+FQDNFormat, fqdnPrefix, location)
+}
+
+// FormatProdFQDNByLocation constructs an Azure prod fqdn with custom cloud profile
+// CustomCloudName is name of environment if customCloudProfile is provided, it will be empty string if customCloudProfile is empty.
+// Because customCloudProfile is empty for deployment for AzurePublicCloud, AzureChinaCloud,AzureGermanCloud,AzureUSGovernmentCloud,
+// The customCloudName value will be empty string for those clouds
+func FormatProdFQDNByLocation(fqdnPrefix string, location string, cloudName string) string {
+	targetEnv := helpers.GetTargetEnv(location, cloudName)
 	FQDNFormat := AzureCloudSpecEnvMap[targetEnv].EndpointConfig.ResourceManagerVMDNSSuffix
 	return fmt.Sprintf("%s.%s."+FQDNFormat, fqdnPrefix, location)
 }

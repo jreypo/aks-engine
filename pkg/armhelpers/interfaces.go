@@ -8,14 +8,14 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/authorization/mgmt/2015-07-01/authorization"
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-04-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/graphrbac/1.6/graphrbac"
 	"github.com/Azure/azure-sdk-for-go/services/preview/msi/mgmt/2015-08-31-preview/msi"
 	"github.com/Azure/azure-sdk-for-go/services/resources/mgmt/2018-05-01/resources"
 	azStorage "github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/Azure/go-autorest/autorest"
 	log "github.com/sirupsen/logrus"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 )
 
 // VirtualMachineListResultPage is an interface for compute.VirtualMachineListResultPage to aid in mocking
@@ -24,6 +24,24 @@ type VirtualMachineListResultPage interface {
 	NotDone() bool
 	Response() compute.VirtualMachineListResult
 	Values() []compute.VirtualMachine
+}
+
+// VirtualMachineScaleSetListResultPage is an interface for compute.VirtualMachineScaleSetListResultPage to aid in mocking
+type VirtualMachineScaleSetListResultPage interface {
+	Next() error
+	NextWithContext(ctx context.Context) (err error)
+	NotDone() bool
+	Response() compute.VirtualMachineScaleSetListResult
+	Values() []compute.VirtualMachineScaleSet
+}
+
+// VirtualMachineScaleSetVMListResultPage is an interface for compute.VirtualMachineScaleSetListResultPage to aid in mocking
+type VirtualMachineScaleSetVMListResultPage interface {
+	Next() error
+	NextWithContext(ctx context.Context) (err error)
+	NotDone() bool
+	Response() compute.VirtualMachineScaleSetVMListResult
+	Values() []compute.VirtualMachineScaleSetVM
 }
 
 // DeploymentOperationsListResultPage is an interface for resources.DeploymentOperationsListResultPage to aid in mocking
@@ -73,11 +91,11 @@ type AKSEngineClient interface {
 	// DeleteVirtualMachine deletes the specified virtual machine.
 	DeleteVirtualMachine(ctx context.Context, resourceGroup, name string) error
 
-	// ListVirtualMachineScaleSets lists the vmss resources in the resource group
-	ListVirtualMachineScaleSets(ctx context.Context, resourceGroup string) (compute.VirtualMachineScaleSetListResultPage, error)
+	// ListVirtualMachineScaleSets lists the VMSS resources in the resource group
+	ListVirtualMachineScaleSets(ctx context.Context, resourceGroup string) (VirtualMachineScaleSetListResultPage, error)
 
-	// ListVirtualMachineScaleSetVMs lists the virtual machines contained in a vmss
-	ListVirtualMachineScaleSetVMs(ctx context.Context, resourceGroup, virtualMachineScaleSet string) (compute.VirtualMachineScaleSetVMListResultPage, error)
+	// ListVirtualMachineScaleSetVMs lists the virtual machines contained in a VMSS
+	ListVirtualMachineScaleSetVMs(ctx context.Context, resourceGroup, virtualMachineScaleSet string) (VirtualMachineScaleSetVMListResultPage, error)
 
 	// DeleteVirtualMachineScaleSetVM deletes a VM in a VMSS
 	DeleteVirtualMachineScaleSetVM(ctx context.Context, resourceGroup, virtualMachineScaleSet, instanceID string) error

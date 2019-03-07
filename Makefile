@@ -25,7 +25,7 @@ GITTAG := $(VERSION_SHORT)
 endif
 
 REPO_PATH := github.com/Azure/$(PROJECT)
-DEV_ENV_IMAGE := quay.io/deis/go-dev:v1.18.2
+DEV_ENV_IMAGE := quay.io/deis/go-dev:v1.19.1
 DEV_ENV_WORK_DIR := /go/src/${REPO_PATH}
 DEV_ENV_OPTS := --rm -v ${CURDIR}:${DEV_ENV_WORK_DIR} -w ${DEV_ENV_WORK_DIR} ${DEV_ENV_VARS}
 DEV_ENV_CMD := docker run ${DEV_ENV_OPTS} ${DEV_ENV_IMAGE}
@@ -124,6 +124,11 @@ test: generate
 .PHONY: test-style
 test-style:
 	@scripts/validate-go.sh
+
+.PHONY: ensure-generated
+ensure-generated:
+	@echo "==> Checking generated files <=="
+	@scripts/ensure-generated.sh
 
 .PHONY: test-e2e
 test-e2e:

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license.
 
+// Package utils provides helper methods to assist with ARM operations.
 package utils
 
 import (
@@ -10,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/Azure/aks-engine/pkg/api"
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-04-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-10-01/compute"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 )
@@ -150,12 +151,12 @@ func GetVMNameIndex(osType compute.OperatingSystemTypes, vmName string) (int, er
 }
 
 // GetK8sVMName reconstructs the VM name
-func GetK8sVMName(p *api.Properties, agentPoolIndex, agentIndex int) (string, error) {
-	if len(p.AgentPoolProfiles) > agentPoolIndex {
-		vmPrefix := p.GetAgentVMPrefix(p.AgentPoolProfiles[agentPoolIndex])
-		if vmPrefix != "" {
-			return vmPrefix + strconv.Itoa(agentIndex), nil
-		}
+func GetK8sVMName(p *api.Properties, agentPoolProfile *api.AgentPoolProfile, agentIndex int) (string, error) {
+
+	vmPrefix := p.GetAgentVMPrefix(agentPoolProfile)
+	if vmPrefix != "" {
+		return vmPrefix + strconv.Itoa(agentIndex), nil
 	}
+
 	return "", errors.Errorf("Failed to reconstruct VM Name")
 }

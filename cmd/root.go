@@ -14,8 +14,8 @@ import (
 	"github.com/Azure/aks-engine/pkg/armhelpers"
 	"github.com/Azure/aks-engine/pkg/helpers"
 	"github.com/Azure/go-autorest/autorest/azure"
+	"github.com/gofrs/uuid"
 	"github.com/pkg/errors"
-	uuid "github.com/satori/go.uuid"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	flag "github.com/spf13/pflag"
@@ -24,8 +24,8 @@ import (
 
 const (
 	rootName             = "aks-engine"
-	rootShortDescription = "AKS-Engine deploys and manages Kubernetes clusters in Azure"
-	rootLongDescription  = "AKS-Engine deploys and manages Kubernetes clusters in Azure"
+	rootShortDescription = "AKS Engine deploys and manages Kubernetes clusters in Azure"
+	rootLongDescription  = "AKS Engine deploys and manages Kubernetes clusters in Azure"
 )
 
 var (
@@ -33,7 +33,7 @@ var (
 	dumpDefaultModel bool
 )
 
-// NewRootCmd returns the root command for AKS-Engine.
+// NewRootCmd returns the root command for AKS Engine.
 func NewRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   rootName,
@@ -61,6 +61,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newDeployCmd())
+	rootCmd.AddCommand(newGetVersionsCmd())
 	rootCmd.AddCommand(newOrchestratorsCmd())
 	rootCmd.AddCommand(newUpgradeCmd())
 	rootCmd.AddCommand(newScaleCmd())
@@ -109,7 +110,7 @@ type authArgs struct {
 func addAuthFlags(authArgs *authArgs, f *flag.FlagSet) {
 	f.StringVar(&authArgs.RawAzureEnvironment, "azure-env", "AzurePublicCloud", "the target Azure cloud")
 	f.StringVarP(&authArgs.rawSubscriptionID, "subscription-id", "s", "", "azure subscription id (required)")
-	f.StringVar(&authArgs.AuthMethod, "auth-method", "client_secret", "auth method (default:`client_secret`, `device`, `client_certificate`)")
+	f.StringVar(&authArgs.AuthMethod, "auth-method", "client_secret", "auth method (default:`client_secret`, `cli`, `client_certificate`, `device`)")
 	f.StringVar(&authArgs.rawClientID, "client-id", "", "client id (used with --auth-method=[client_secret|client_certificate])")
 	f.StringVar(&authArgs.ClientSecret, "client-secret", "", "client secret (used with --auth-mode=client_secret)")
 	f.StringVar(&authArgs.CertificatePath, "certificate-path", "", "path to client certificate (used with --auth-method=client_certificate)")
@@ -199,6 +200,8 @@ func (authArgs *authArgs) getClient() (armhelpers.AKSEngineClient, error) {
 		return nil, err
 	}
 	switch authArgs.AuthMethod {
+	case "cli":
+		client, err = armhelpers.NewAzureClientWithCLI(env, authArgs.SubscriptionID.String())
 	case "device":
 		client, err = armhelpers.NewAzureClientWithDeviceAuth(env, authArgs.SubscriptionID.String())
 	case "client_secret":

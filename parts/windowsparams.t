@@ -45,7 +45,7 @@
     "agentWindowsVersion": {
       "defaultValue": "latest",
       "metadata": {
-        "description": "Version of the Windows Server 2016 OS image to use for the agent virtual machines."
+        "description": "Version of the Windows Server OS image to use for the agent virtual machines."
       },
       "type": "string"
     },
@@ -78,7 +78,7 @@
       "type": "string"
     },
     "windowsDockerVersion": {
-      "defaultValue": "18.09.0",
+      "defaultValue": "18.09.2",
       "metadata": {
         "description": "The version of Docker to be installed on Windows Nodes"
       },

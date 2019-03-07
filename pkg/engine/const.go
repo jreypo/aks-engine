@@ -15,6 +15,8 @@ const (
 	NetworkPolicyCalico = "calico"
 	// NetworkPolicyCilium is the string expression for cilium network policy config option
 	NetworkPolicyCilium = "cilium"
+	// NetworkPluginCilium is the string expression for cilium network plugin config option
+	NetworkPluginCilium = NetworkPolicyCilium
 	// NetworkPolicyAzure is the string expression for Azure CNI network policy manager
 	NetworkPolicyAzure = "azure"
 	// NetworkPluginAzure is the string expression for Azure CNI plugin
@@ -70,7 +72,7 @@ const (
 	// DefaultELBSVCAddonName is the name of the elb service addon deployment
 	DefaultELBSVCAddonName = "elb-svc"
 	// DefaultGeneratorCode specifies the source generator of the cluster template.
-	DefaultGeneratorCode = "acsengine"
+	DefaultGeneratorCode = "aksengine"
 	// DefaultReschedulerAddonName is the name of the rescheduler addon deployment
 	DefaultReschedulerAddonName = "rescheduler"
 	// DefaultHeapsterAddonName is the name of the heapster addon deployment
@@ -120,6 +122,7 @@ const (
 	kubernetesHealthMonitorScript            = "k8s/health-monitor.sh"
 	kubernetesInstalls                       = "k8s/kubernetesinstalls.sh"
 	kubernetesConfigurations                 = "k8s/kubernetesconfigs.sh"
+	kubernetesConfigurationsCustomCloud      = "k8s/kubernetesconfigscustomcloud.sh"
 	kubernetesMountetcd                      = "k8s/kubernetes_mountetcd.sh"
 	kubernetesCustomSearchDomainsScript      = "k8s/setup-custom-search-domains.sh"
 	kubernetesMasterGenerateProxyCertsScript = "k8s/kubernetesmastergenerateproxycertscript.sh"
@@ -133,6 +136,7 @@ const (
 	kubernetesWindowsKubeletFunctionsPS1  = "k8s/windowskubeletfunc.ps1"
 	kubernetesWindowsCniFunctionsPS1      = "k8s/windowscnifunc.ps1"
 	kubernetesWindowsAzureCniFunctionsPS1 = "k8s/windowsazurecnifunc.ps1"
+	kubernetesWindowsOpenSSHFunctionPS1   = "k8s/windowsinstallopensshfunc.ps1"
 	sshdConfig                            = "k8s/sshd_config"
 	systemConf                            = "k8s/system.conf"
 )
@@ -161,6 +165,7 @@ const (
 const (
 	agentOutputs                  = "agentoutputs.t"
 	agentParams                   = "agentparams.t"
+	armParameters                 = "k8s/armparameters.t"
 	dcosAgentResourcesVMAS        = "dcos/dcosagentresourcesvmas.t"
 	dcosWindowsAgentResourcesVMAS = "dcos/dcosWindowsAgentResourcesVmas.t"
 	dcosAgentResourcesVMSS        = "dcos/dcosagentresourcesvmss.t"

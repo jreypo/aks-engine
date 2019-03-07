@@ -80,7 +80,7 @@ func (cs *ContainerService) setAPIServerConfig() {
 		defaultAPIServerConfig["--oidc-groups-claim"] = "groups"
 		defaultAPIServerConfig["--oidc-client-id"] = "spn:" + cs.Properties.AADProfile.ServerAppID
 		issuerHost := "sts.windows.net"
-		if helpers.GetCloudTargetEnv(cs.Location) == "AzureChinaCloud" {
+		if helpers.GetTargetEnv(cs.Location, cs.Properties.GetCustomCloudName()) == "AzureChinaCloud" {
 			issuerHost = "sts.chinacloudapi.cn"
 		}
 		defaultAPIServerConfig["--oidc-issuer-url"] = "https://" + issuerHost + "/" + cs.Properties.AADProfile.TenantID + "/"
@@ -137,6 +137,13 @@ func (cs *ContainerService) setAPIServerConfig() {
 			delete(o.KubernetesConfig.APIServerConfig, key)
 		}
 	}
+	// Enforce flags removal that don't work with specific versions, to accommodate upgrade
+	// Remove flags that are not compatible with 1.14
+	if common.IsKubernetesVersionGe(o.OrchestratorVersion, "1.14.0-alpha.1") {
+		for _, key := range []string{"--repair-malformed-updates"} {
+			delete(o.KubernetesConfig.APIServerConfig, key)
+		}
+	}
 }
 
 func getDefaultAdmissionControls(cs *ContainerService) (string, string) {
@@ -152,7 +159,7 @@ func getDefaultAdmissionControls(cs *ContainerService) (string, string) {
 	// Add new version case when applying admission controllers only available in that version or later
 	switch {
 	case common.IsKubernetesVersionGe(o.OrchestratorVersion, "1.9.0"):
-		admissionControlValues = "NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota,ExtendedResourceToleration"
+		admissionControlValues = "NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,ValidatingAdmissionWebhook,ResourceQuota,ExtendedResourceToleration"
 	default:
 		admissionControlValues = "NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota"
 	}

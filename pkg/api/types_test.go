@@ -6,8 +6,10 @@ package api
 import (
 	"log"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/to"
 
 	"github.com/Azure/aks-engine/pkg/api/common"
@@ -15,6 +17,7 @@ import (
 )
 
 const exampleCustomHyperkubeImage = `example.azurecr.io/example/hyperkube-amd64:custom`
+const examplePrivateAzureRegistryServer = `example.azurecr.io`
 
 const exampleAPIModel = `{
 		"apiVersion": "vlabs",
@@ -32,6 +35,26 @@ const exampleAPIModel = `{
 		},
 		"servicePrincipalProfile": { "clientId": "", "secret": "" }
 	}
+}
+`
+
+const exampleAPIModelWithPrivateAzureRegistry = `{
+	"apiVersion": "vlabs",
+"properties": {
+	"orchestratorProfile": {
+		"orchestratorType": "Kubernetes",
+		"kubernetesConfig": {
+			"customHyperkubeImage": "` + exampleCustomHyperkubeImage + `",
+			"privateAzureRegistryServer": "` + examplePrivateAzureRegistryServer + `"
+		}
+	},
+	"masterProfile": { "count": 1, "dnsPrefix": "", "vmSize": "Standard_D2_v2" },
+	"agentPoolProfiles": [ { "name": "linuxpool1", "count": 2, "vmSize": "Standard_D2_v2", "availabilityProfile": "AvailabilitySet" } ],
+	"windowsProfile": { "adminUsername": "azureuser", "adminPassword": "replacepassword1234$" },
+	"linuxProfile": { "adminUsername": "azureuser", "ssh": { "publicKeys": [ { "keyData": "" } ] }
+	},
+	"servicePrincipalProfile": { "clientId": "", "secret": "" }
+}
 }
 `
 
@@ -504,6 +527,42 @@ func TestAvailabilityProfile(t *testing.T) {
 	}
 }
 
+func TestPerAgentPoolVersionAndState(t *testing.T) {
+	cases := []struct {
+		ap              AgentPoolProfile
+		expectedVersion string
+		expectedState   ProvisioningState
+	}{
+		{
+			ap: AgentPoolProfile{
+				Name:                "agentpool1",
+				OrchestratorVersion: "1.12.0",
+				ProvisioningState:   Creating,
+			},
+			expectedVersion: "1.12.0",
+			expectedState:   Creating,
+		},
+		{
+			ap: AgentPoolProfile{
+				Name:                "agentpool2",
+				OrchestratorVersion: "",
+				ProvisioningState:   "",
+			},
+			expectedVersion: "",
+			expectedState:   "",
+		},
+	}
+
+	for _, c := range cases {
+		if c.ap.OrchestratorVersion != c.expectedVersion {
+			t.Fatalf("Orchestrator profile mismatch. Expected: %s. Got: %s.", c.expectedVersion, c.ap.OrchestratorVersion)
+		}
+		if c.ap.ProvisioningState != c.expectedState {
+			t.Fatalf("Provisioning state mismatch. Expected: %s. Got: %s.", c.expectedState, c.ap.ProvisioningState)
+		}
+	}
+}
+
 func TestIsCustomVNET(t *testing.T) {
 	cases := []struct {
 		p              Properties
@@ -676,7 +735,7 @@ func TestRequireRouteTable(t *testing.T) {
 				OrchestratorProfile: &OrchestratorProfile{
 					OrchestratorType: Kubernetes,
 					KubernetesConfig: &KubernetesConfig{
-						NetworkPolicy: "cilium",
+						NetworkPolicy: NetworkPolicyCilium,
 					},
 				},
 			},
@@ -789,6 +848,11 @@ func TestWindowsProfile(t *testing.T) {
 		t.Fatalf("Expected GetWindowsSku() to equal default KubernetesDefaultWindowsSku, got %s", windowsSku)
 	}
 
+	update := w.GetEnableWindowsUpdate()
+	if !update {
+		t.Fatalf("Expected GetEnableWindowsUpdate() to equal default 'true', got %t", update)
+	}
+
 	w = WindowsProfile{
 		Secrets: []KeyVaultSecrets{
 			{
@@ -811,6 +875,7 @@ func TestWindowsProfile(t *testing.T) {
 	w = WindowsProfile{
 		WindowsDockerVersion: "18.03.1-ee-3",
 		WindowsSku:           "Datacenter-Core-1809-with-Containers-smalldisk",
+		SSHEnabled:           true,
 	}
 
 	dv = w.GetWindowsDockerVersion()
@@ -821,6 +886,11 @@ func TestWindowsProfile(t *testing.T) {
 	windowsSku = w.GetWindowsSku()
 	if windowsSku != "Datacenter-Core-1809-with-Containers-smalldisk" {
 		t.Fatalf("Expected GetWindowsSku() to equal Datacenter-Core-1809-with-Containers-smalldisk, got %s", windowsSku)
+	}
+
+	se := w.SSHEnabled
+	if !se {
+		t.Fatalf("Expected SSHEnabled to return true, got %v", se)
 	}
 }
 
@@ -911,6 +981,22 @@ func TestCustomHyperkubeImageField(t *testing.T) {
 	actualCustomHyperkubeImage := apimodel.Properties.OrchestratorProfile.KubernetesConfig.CustomHyperkubeImage
 	if actualCustomHyperkubeImage != exampleCustomHyperkubeImage {
 		t.Fatalf("kubernetesConfig->customHyperkubeImage field value was unexpected: got(%s), expected(%s)", actualCustomHyperkubeImage, exampleCustomHyperkubeImage)
+	}
+}
+
+func TestPrivateAzureRegistryServerField(t *testing.T) {
+	log.Println(exampleAPIModelWithPrivateAzureRegistry)
+	apiloader := &Apiloader{
+		Translator: nil,
+	}
+	apimodel, _, err := apiloader.DeserializeContainerService([]byte(exampleAPIModelWithPrivateAzureRegistry), false, false, nil)
+	if err != nil {
+		t.Fatalf("unexpectedly error deserializing the example apimodel: %s", err)
+	}
+
+	actualPrivateAzureRegistryServer := apimodel.Properties.OrchestratorProfile.KubernetesConfig.PrivateAzureRegistryServer
+	if actualPrivateAzureRegistryServer != examplePrivateAzureRegistryServer {
+		t.Fatalf("kubernetesConfig->privateAzureRegistryServer field value was unexpected: got(%s), expected(%s)", actualPrivateAzureRegistryServer, examplePrivateAzureRegistryServer)
 	}
 }
 
@@ -2603,6 +2689,87 @@ func TestFormatAzureProdFQDN(t *testing.T) {
 
 }
 
+func TestFormatProdFQDNByLocation(t *testing.T) {
+	// Test locations for Azure
+	mockCSDefault := getMockBaseContainerService("1.11.6")
+	mockCSDefault.Location = "eastus"
+	dnsPrefix := "santest"
+	var actual []string
+	for _, location := range mockCSDefault.GetLocations() {
+		actual = append(actual, FormatProdFQDNByLocation(dnsPrefix, location, mockCSDefault.Properties.GetCustomCloudName()))
+	}
+
+	expected := []string{
+		"santest.australiacentral.cloudapp.azure.com",
+		"santest.australiacentral2.cloudapp.azure.com",
+		"santest.australiaeast.cloudapp.azure.com",
+		"santest.australiasoutheast.cloudapp.azure.com",
+		"santest.brazilsouth.cloudapp.azure.com",
+		"santest.canadacentral.cloudapp.azure.com",
+		"santest.canadaeast.cloudapp.azure.com",
+		"santest.centralindia.cloudapp.azure.com",
+		"santest.centralus.cloudapp.azure.com",
+		"santest.centraluseuap.cloudapp.azure.com",
+		"santest.chinaeast.cloudapp.chinacloudapi.cn",
+		"santest.chinaeast2.cloudapp.chinacloudapi.cn",
+		"santest.chinanorth.cloudapp.chinacloudapi.cn",
+		"santest.chinanorth2.cloudapp.chinacloudapi.cn",
+		"santest.eastasia.cloudapp.azure.com",
+		"santest.eastus.cloudapp.azure.com",
+		"santest.eastus2.cloudapp.azure.com",
+		"santest.eastus2euap.cloudapp.azure.com",
+		"santest.francecentral.cloudapp.azure.com",
+		"santest.francesouth.cloudapp.azure.com",
+		"santest.japaneast.cloudapp.azure.com",
+		"santest.japanwest.cloudapp.azure.com",
+		"santest.koreacentral.cloudapp.azure.com",
+		"santest.koreasouth.cloudapp.azure.com",
+		"santest.northcentralus.cloudapp.azure.com",
+		"santest.northeurope.cloudapp.azure.com",
+		"santest.southcentralus.cloudapp.azure.com",
+		"santest.southeastasia.cloudapp.azure.com",
+		"santest.southindia.cloudapp.azure.com",
+		"santest.uksouth.cloudapp.azure.com",
+		"santest.ukwest.cloudapp.azure.com",
+		"santest.westcentralus.cloudapp.azure.com",
+		"santest.westeurope.cloudapp.azure.com",
+		"santest.westindia.cloudapp.azure.com",
+		"santest.westus.cloudapp.azure.com",
+		"santest.westus2.cloudapp.azure.com",
+		"santest.chinaeast.cloudapp.chinacloudapi.cn",
+		"santest.chinanorth.cloudapp.chinacloudapi.cn",
+		"santest.chinanorth2.cloudapp.chinacloudapi.cn",
+		"santest.chinaeast2.cloudapp.chinacloudapi.cn",
+		"santest.germanycentral.cloudapp.microsoftazure.de",
+		"santest.germanynortheast.cloudapp.microsoftazure.de",
+		"santest.usgovvirginia.cloudapp.usgovcloudapi.net",
+		"santest.usgoviowa.cloudapp.usgovcloudapi.net",
+		"santest.usgovarizona.cloudapp.usgovcloudapi.net",
+		"santest.usgovtexas.cloudapp.usgovcloudapi.net",
+		"santest.francecentral.cloudapp.azure.com",
+	}
+
+	if !reflect.DeepEqual(actual, expected) {
+		t.Errorf("expected formatted fqdns %s, but got %s", expected, actual)
+	}
+
+	// Test location for Azure Stack Cloud
+	mockCSDefaultSpec := getMockBaseContainerService("1.11.6")
+	mockCSPDefaultSpec := getMockPropertiesWithCustomCloudProfile("azurestackcloud", true, true, false)
+	mockCSDefaultSpec.Properties.CustomCloudProfile = mockCSPDefaultSpec.CustomCloudProfile
+	mockCSDefaultSpec.Location = "randomlocation"
+	mockCSDefaultSpec.Properties.MasterProfile.DNSPrefix = "azurestackprefix"
+	mockCSDefaultSpec.SetPropertiesDefaults(false, false)
+	var actualResult []string
+	for _, location := range mockCSDefaultSpec.GetLocations() {
+		actualResult = append(actualResult, FormatProdFQDNByLocation("azurestackprefix", location, mockCSDefaultSpec.Properties.GetCustomCloudName()))
+	}
+	expectedResult := []string{"azurestackprefix.randomlocation.cloudapp.azurestack.external"}
+	if !reflect.DeepEqual(expectedResult, actualResult) {
+		t.Errorf("Test TestGetLocations() : expected to return %s, but got %s . ", expectedResult, actualResult)
+	}
+}
+
 func TestKubernetesConfig_GetAddonScript(t *testing.T) {
 	addon := getMockAddon(IPMASQAgentAddonName)
 	addon.Data = "foobarbazdata"
@@ -2629,6 +2796,24 @@ func TestContainerService_GetAzureProdFQDN(t *testing.T) {
 	}
 }
 
+func TestAgentPoolResource(t *testing.T) {
+	expectedName := "TestAgentPool"
+	expectedVersion := "1.13.0"
+	expectedCount := 100
+
+	agentPoolResource := CreateMockAgentPoolProfile(expectedName, expectedVersion, Succeeded, expectedCount)
+
+	gotName := agentPoolResource.Properties.Name
+	gotVervsion := agentPoolResource.Properties.OrchestratorVersion
+	gotCount := agentPoolResource.Properties.Count
+
+	if gotName != expectedName || gotVervsion != expectedVersion || gotCount != expectedCount {
+		t.Fatalf("Expected values - name: %s, version: %s, count: %d. Got - name: %s, version: %s, count: %d", expectedName, expectedVersion, expectedCount,
+			gotName, gotVervsion, gotCount)
+	}
+
+}
+
 func TestKubernetesConfig_RequiresDocker(t *testing.T) {
 	// k8sConfig with empty runtime string
 	k := &KubernetesConfig{
@@ -2641,7 +2826,7 @@ func TestKubernetesConfig_RequiresDocker(t *testing.T) {
 
 	// k8sConfig with empty runtime string
 	k = &KubernetesConfig{
-		ContainerRuntime: "docker",
+		ContainerRuntime: Docker,
 	}
 
 	if !k.RequiresDocker() {
@@ -2736,4 +2921,381 @@ func TestIsFeatureEnabled(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKubernetesConfig_GetUserAssignedID(t *testing.T) {
+	k := KubernetesConfig{
+		UseManagedIdentity: true,
+		UserAssignedID:     "fooID",
+	}
+	expected := "fooID"
+
+	if k.GetUserAssignedID() != expected {
+		t.Errorf("expected user assigned ID to be %s, but got %s", expected, k.GetUserAssignedID())
+	}
+
+	k = KubernetesConfig{
+		UseManagedIdentity: false,
+		UserAssignedID:     "fooID",
+	}
+
+	if k.GetUserAssignedID() != "" {
+		t.Errorf("expected user assigned ID to be empty when useManagedIdentity is set to false")
+	}
+}
+
+func TestKubernetesConfig_GetUserAssignedClientID(t *testing.T) {
+	k := KubernetesConfig{
+		UseManagedIdentity:   true,
+		UserAssignedClientID: "fooClientID",
+	}
+	expected := "fooClientID"
+
+	if k.GetUserAssignedClientID() != expected {
+		t.Errorf("expected user assigned ID to be %s, but got %s", expected, k.GetUserAssignedClientID())
+	}
+
+	k = KubernetesConfig{
+		UseManagedIdentity:   false,
+		UserAssignedClientID: "fooClientID",
+	}
+
+	if k.GetUserAssignedClientID() != "" {
+		t.Errorf("expected user assigned client ID to be empty when useManagedIdentity is set to false")
+	}
+}
+
+func TestKubernetesConfig_UserAssignedIDEnabled(t *testing.T) {
+	k := KubernetesConfig{
+		UseManagedIdentity: true,
+		UserAssignedID:     "fooID",
+	}
+	if !k.UserAssignedIDEnabled() {
+		t.Errorf("expected userAssignedIDEnabled to be true when UseManagedIdentity is true and UserAssignedID is non-empty")
+	}
+
+	k = KubernetesConfig{
+		UseManagedIdentity: false,
+		UserAssignedID:     "fooID",
+	}
+
+	if k.UserAssignedIDEnabled() {
+		t.Errorf("expected userAssignedIDEnabled to be false when useManagedIdentity is set to false")
+	}
+}
+
+func TestKubernetesConfig_UserAssignedClientIDEnabled(t *testing.T) {
+	k := KubernetesConfig{
+		UseManagedIdentity:   true,
+		UserAssignedClientID: "fooClientID",
+	}
+	if !k.UserAssignedClientIDEnabled() {
+		t.Errorf("expected userAssignedClientIDEnabled to be true when UseManagedIdentity is true and UserAssignedClientID is non-empty")
+	}
+
+	k = KubernetesConfig{
+		UseManagedIdentity:   false,
+		UserAssignedClientID: "fooClientID",
+	}
+
+	if k.UserAssignedClientIDEnabled() {
+		t.Errorf("expected userAssignedClientIDEnabled to be false when useManagedIdentity is set to false")
+	}
+}
+
+func TestIsAzureStackCloud(t *testing.T) {
+	testcases := []struct {
+		name       string
+		properties Properties
+		expected   bool
+	}{
+		{
+			"Empty environment name",
+			getMockPropertiesWithCustomCloudProfile("", true, true, false),
+			false,
+		},
+		{
+			"Empty environment name with AzureEnvironmentSpecConfig",
+			getMockPropertiesWithCustomCloudProfile("", true, true, true),
+			false,
+		},
+		{
+			"lower case cloud name",
+			getMockPropertiesWithCustomCloudProfile("azurestackcloud", true, true, true),
+			true,
+		},
+		{
+			"cammel case cloud name",
+			getMockPropertiesWithCustomCloudProfile("AzureStackCloud", true, true, true),
+			true,
+		},
+		{
+			"incorrect cloud name",
+			getMockPropertiesWithCustomCloudProfile("NotAzureStackCloud", true, true, true),
+			false,
+		},
+		{
+			"empty cloud profile",
+			getMockPropertiesWithCustomCloudProfile("AzureStackCloud", false, false, false),
+			false,
+		},
+		{
+			"empty environment ",
+			getMockPropertiesWithCustomCloudProfile("AzureStackCloud", true, false, true),
+			false,
+		},
+	}
+	for _, testcase := range testcases {
+		actual := testcase.properties.IsAzureStackCloud()
+		if testcase.expected != actual {
+			t.Errorf("Test \"%s\": expected IsAzureStackCloud() to return %t, but got %t . ", testcase.name, testcase.expected, actual)
+		}
+	}
+}
+
+func TestGetCustomCloudName(t *testing.T) {
+	testcases := []struct {
+		name       string
+		properties Properties
+		expected   string
+	}{
+		{
+			"lower case cloud name",
+			getMockPropertiesWithCustomCloudProfile("azurestackcloud", true, true, true),
+			"azurestackcloud",
+		},
+		{
+			"cammel case cloud name",
+			getMockPropertiesWithCustomCloudProfile("AzureStackCloud", true, true, true),
+			"AzureStackCloud",
+		},
+	}
+	for _, testcase := range testcases {
+		actual := testcase.properties.GetCustomCloudName()
+		if testcase.expected != actual {
+			t.Errorf("Test \"%s\": expected GetCustomCloudName() to return %s, but got %s . ", testcase.name, testcase.expected, actual)
+		}
+	}
+}
+
+func TestGetCustomEnvironmentJSON(t *testing.T) {
+	expectedResult := `{"name":"azurestackcloud","managementPortalURL":"https://management.local.azurestack.external/","publishSettingsURL":"https://management.local.azurestack.external/publishsettings/index","serviceManagementEndpoint":"https://management.azurestackci15.onmicrosoft.com/36f71706-54df-4305-9847-5b038a4cf189","resourceManagerEndpoint":"https://management.local.azurestack.external/","activeDirectoryEndpoint":"https://login.windows.net/","galleryEndpoint":"https://portal.local.azurestack.external=30015/","keyVaultEndpoint":"https://vault.azurestack.external/","graphEndpoint":"https://graph.windows.net/","serviceBusEndpoint":"https://servicebus.azurestack.external/","batchManagementEndpoint":"https://batch.azurestack.external/","storageEndpointSuffix":"core.azurestack.external","sqlDatabaseDNSSuffix":"database.azurestack.external","trafficManagerDNSSuffix":"trafficmanager.cn","keyVaultDNSSuffix":"vault.azurestack.external","serviceBusEndpointSuffix":"servicebus.azurestack.external","serviceManagementVMDNSSuffix":"chinacloudapp.cn","resourceManagerVMDNSSuffix":"cloudapp.azurestack.external","containerRegistryDNSSuffix":"azurecr.io","tokenAudience":"https://management.azurestack.external/"}`
+	expectedResult = strings.Replace(expectedResult, "\"", "\\\"", -1)
+	testcases := []struct {
+		name       string
+		properties Properties
+		expected   string
+	}{
+		{
+			"lower case cloud name",
+			getMockPropertiesWithCustomCloudProfile("azurestackcloud", true, true, true),
+			expectedResult,
+		},
+	}
+	for _, testcase := range testcases {
+		actual := testcase.properties.GetCustomEnvironmentJSON()
+		if testcase.expected != actual {
+			t.Errorf("Test \"%s\": expected GetCustomEnvironmentJSON() to return %s, but got %s . ", testcase.name, testcase.expected, actual)
+		}
+	}
+}
+
+func TestGetLocations(t *testing.T) {
+
+	// Test location for Azure Stack Cloud
+	mockCSDefaultSpec := getMockBaseContainerService("1.11.6")
+	mockCSPDefaultSpec := getMockPropertiesWithCustomCloudProfile("azurestackcloud", true, true, false)
+	mockCSDefaultSpec.Properties.CustomCloudProfile = mockCSPDefaultSpec.CustomCloudProfile
+	mockCSDefaultSpec.Location = "randomlocation"
+
+	expectedResult := []string{"randomlocation"}
+	actualResult := mockCSDefaultSpec.GetLocations()
+	if !reflect.DeepEqual(expectedResult, actualResult) {
+		t.Errorf("Test TestGetLocations() : expected to return %s, but got %s . ", expectedResult, actualResult)
+	}
+
+	// Test locations for Azure
+	mockCSDefault := getMockBaseContainerService("1.11.6")
+	mockCSDefault.Location = "eastus"
+
+	expected := []string{"australiacentral",
+		"australiacentral2",
+		"australiaeast",
+		"australiasoutheast",
+		"brazilsouth",
+		"canadacentral",
+		"canadaeast",
+		"centralindia",
+		"centralus",
+		"centraluseuap",
+		"chinaeast",
+		"chinaeast2",
+		"chinanorth",
+		"chinanorth2",
+		"eastasia",
+		"eastus",
+		"eastus2",
+		"eastus2euap",
+		"francecentral",
+		"francesouth",
+		"japaneast",
+		"japanwest",
+		"koreacentral",
+		"koreasouth",
+		"northcentralus",
+		"northeurope",
+		"southcentralus",
+		"southeastasia",
+		"southindia",
+		"uksouth",
+		"ukwest",
+		"westcentralus",
+		"westeurope",
+		"westindia",
+		"westus",
+		"westus2",
+		"chinaeast",
+		"chinanorth",
+		"chinanorth2",
+		"chinaeast2",
+		"germanycentral",
+		"germanynortheast",
+		"usgovvirginia",
+		"usgoviowa",
+		"usgovarizona",
+		"usgovtexas",
+		"francecentral"}
+	actual := mockCSDefault.GetLocations()
+	if !reflect.DeepEqual(expected, actual) {
+		t.Errorf("Test TestGetLocations() : expected to return %s, but got %s . ", expected, actual)
+	}
+}
+
+func TestGetMasterFQDN(t *testing.T) {
+	tests := []struct {
+		name         string
+		properties   *Properties
+		expectedFQDN string
+	}{
+		{
+			name: "From Master Profile",
+			properties: &Properties{
+				MasterProfile: &MasterProfile{
+					DNSPrefix: "foo_master",
+					FQDN:      "FQDNFromMasterProfile",
+				},
+				AgentPoolProfiles: []*AgentPoolProfile{
+					{
+						Name: "foo_agent0",
+					},
+				},
+			},
+			expectedFQDN: "FQDNFromMasterProfile",
+		},
+		{
+			name: "From Hosted Master Profile",
+			properties: &Properties{
+				HostedMasterProfile: &HostedMasterProfile{
+					DNSPrefix: "foo_hosted_master",
+					FQDN:      "FQDNFromHostedMasterProfile",
+				},
+				AgentPoolProfiles: []*AgentPoolProfile{
+					{
+						Name: "foo_agent1",
+					},
+				},
+			},
+			expectedFQDN: "FQDNFromHostedMasterProfile",
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			actual := test.properties.GetMasterFQDN()
+
+			if actual != test.expectedFQDN {
+				t.Errorf("expected fqdn %s, but got %s", test.expectedFQDN, actual)
+			}
+		})
+	}
+}
+
+func getMockPropertiesWithCustomCloudProfile(name string, hasCustomCloudProfile, hasEnvironment, hasAzureEnvironmentSpecConfig bool) Properties {
+	var (
+		managementPortalURL          = "https://management.local.azurestack.external/"
+		publishSettingsURL           = "https://management.local.azurestack.external/publishsettings/index"
+		serviceManagementEndpoint    = "https://management.azurestackci15.onmicrosoft.com/36f71706-54df-4305-9847-5b038a4cf189"
+		resourceManagerEndpoint      = "https://management.local.azurestack.external/"
+		activeDirectoryEndpoint      = "https://login.windows.net/"
+		galleryEndpoint              = "https://portal.local.azurestack.external=30015/"
+		keyVaultEndpoint             = "https://vault.azurestack.external/"
+		graphEndpoint                = "https://graph.windows.net/"
+		serviceBusEndpoint           = "https://servicebus.azurestack.external/"
+		batchManagementEndpoint      = "https://batch.azurestack.external/"
+		storageEndpointSuffix        = "core.azurestack.external"
+		sqlDatabaseDNSSuffix         = "database.azurestack.external"
+		trafficManagerDNSSuffix      = "trafficmanager.cn"
+		keyVaultDNSSuffix            = "vault.azurestack.external"
+		serviceBusEndpointSuffix     = "servicebus.azurestack.external"
+		serviceManagementVMDNSSuffix = "chinacloudapp.cn"
+		resourceManagerVMDNSSuffix   = "cloudapp.azurestack.external"
+		containerRegistryDNSSuffix   = "azurecr.io"
+		tokenAudience                = "https://management.azurestack.external/"
+	)
+
+	p := Properties{}
+	if hasCustomCloudProfile {
+		p.CustomCloudProfile = &CustomCloudProfile{}
+		if hasEnvironment {
+			p.CustomCloudProfile.Environment = &azure.Environment{
+				Name:                         name,
+				ManagementPortalURL:          managementPortalURL,
+				PublishSettingsURL:           publishSettingsURL,
+				ServiceManagementEndpoint:    serviceManagementEndpoint,
+				ResourceManagerEndpoint:      resourceManagerEndpoint,
+				ActiveDirectoryEndpoint:      activeDirectoryEndpoint,
+				GalleryEndpoint:              galleryEndpoint,
+				KeyVaultEndpoint:             keyVaultEndpoint,
+				GraphEndpoint:                graphEndpoint,
+				ServiceBusEndpoint:           serviceBusEndpoint,
+				BatchManagementEndpoint:      batchManagementEndpoint,
+				StorageEndpointSuffix:        storageEndpointSuffix,
+				SQLDatabaseDNSSuffix:         sqlDatabaseDNSSuffix,
+				TrafficManagerDNSSuffix:      trafficManagerDNSSuffix,
+				KeyVaultDNSSuffix:            keyVaultDNSSuffix,
+				ServiceBusEndpointSuffix:     serviceBusEndpointSuffix,
+				ServiceManagementVMDNSSuffix: serviceManagementVMDNSSuffix,
+				ResourceManagerVMDNSSuffix:   resourceManagerVMDNSSuffix,
+				ContainerRegistryDNSSuffix:   containerRegistryDNSSuffix,
+				TokenAudience:                tokenAudience,
+			}
+		}
+		if hasAzureEnvironmentSpecConfig {
+			//azureStackCloudSpec is the default configurations for azure stack with public Azure.
+			azureStackCloudSpec := AzureEnvironmentSpecConfig{
+				CloudName: AzureStackCloud,
+				//DockerSpecConfig specify the docker engine download repo
+				DockerSpecConfig: DefaultDockerSpecConfig,
+				//KubernetesSpecConfig is the default kubernetes container image url.
+				KubernetesSpecConfig: DefaultKubernetesSpecConfig,
+				DCOSSpecConfig:       DefaultDCOSSpecConfig,
+				EndpointConfig: AzureEndpointConfig{
+					ResourceManagerVMDNSSuffix: "",
+				},
+				OSImageConfig: map[Distro]AzureOSImageConfig{
+					Ubuntu:          DefaultUbuntuImageConfig,
+					RHEL:            DefaultRHELOSImageConfig,
+					CoreOS:          DefaultCoreOSImageConfig,
+					AKS:             DefaultAKSOSImageConfig,
+					AKSDockerEngine: DefaultAKSDockerEngineOSImageConfig,
+				},
+			}
+			p.CustomCloudProfile.AzureEnvironmentSpecConfig = &azureStackCloudSpec
+		}
+		p.CustomCloudProfile.IdentitySystem = AzureADIdentitySystem
+		p.CustomCloudProfile.AuthenticationMethod = ClientSecretAuthMethod
+	}
+	return p
 }

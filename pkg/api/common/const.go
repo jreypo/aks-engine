@@ -37,6 +37,8 @@ const (
 	MinIPAddressCount = 1
 	// MaxIPAddressCount specifies the maximum number of IP addresses per network interface
 	MaxIPAddressCount = 256
+	// address relative to the first consecutive Kubernetes static IP
+	DefaultInternalLbStaticIPOffset = 10
 )
 
 // Availability profiles
@@ -57,7 +59,7 @@ const (
 
 const (
 	// KubernetesDefaultRelease is the default Kubernetes release
-	KubernetesDefaultRelease string = "1.10"
+	KubernetesDefaultRelease string = "1.11"
 	// KubernetesDefaultReleaseWindows is the default Kubernetes release
 	KubernetesDefaultReleaseWindows string = "1.9"
 )

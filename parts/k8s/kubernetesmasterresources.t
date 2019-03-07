@@ -166,6 +166,36 @@
               "sourcePortRange": "*"
             }
           }
+          {{if IsAzureStackCloud}}
+            ,{
+              "name": "allow_vnet_inbound",
+              "properties": {
+                "access": "Allow",
+                "description": "Allow traffic to specific addresses.",
+                "destinationAddressPrefix": "10.0.0.0/8",
+                "destinationPortRange": "*",
+                "direction": "Inbound",
+                "priority": 4095,
+                "protocol": "*",
+                "sourceAddressPrefix": "10.0.0.0/8",
+                "sourcePortRange": "*"
+              }
+            },
+            {
+              "name": "allow_vnet_outbound",
+              "properties": {
+                "access": "Allow",
+                "description": "Allow traffic to specific addresses.",
+                "destinationAddressPrefix": "10.0.0.0/8",
+                "destinationPortRange": "*",
+                "direction": "Outbound",
+                "priority": 4095,
+                "protocol": "*",
+                "sourceAddressPrefix": "10.0.0.0/8",
+                "sourcePortRange": "*"
+              }
+            }
+        {{end}}
         {{if IsFeatureEnabled "BlockOutboundInternet"}}
           ,{
             "name": "allow_vnet",
@@ -269,6 +299,24 @@
             }
           }
         ],
+        "inboundNatRules": [
+        {{$max := .MasterProfile.Count}}
+        {{$c := subtract $max 1}}
+        {{range $i := loop 0 $c}}
+          {
+             "name": "[concat('SSH-', variables('masterVMNamePrefix'), {{$i}})]",
+             "properties": {
+                     "backendPort": 22,
+                     "enableFloatingIP": false,
+                     "frontendIPConfiguration": {
+                       "id": "[variables('masterLbIPConfigID')]"
+                     },
+                     "frontendPort": "[variables('sshNatPorts')[{{$i}}]]",
+                     "protocol": "Tcp"
+             }
+           }{{if ne $i $c}},{{end}}
+        {{end}}
+        ],
         "probes": [
           {
             "name": "tcpHTTPSProbe",
@@ -276,7 +324,7 @@
               "protocol": "Tcp",
               "port": 443,
               "intervalInSeconds": 5,
-              "numberOfProbes": "2"
+              "numberOfProbes": 2
             }
           }
         ]
@@ -290,28 +338,6 @@
       "apiVersion": "[variables('apiVersionNetwork')]",
       "copy": {
         "count": "[sub(variables('masterCount'), variables('masterOffset'))]",
-        "name": "masterLbLoopNode"
-      },
-      "dependsOn": [
-        "[variables('masterLbID')]"
-      ],
-      "location": "[variables('location')]",
-      "name": "[concat(variables('masterLbName'), '/', 'SSH-', variables('masterVMNamePrefix'), copyIndex(variables('masterOffset')))]",
-      "properties": {
-        "backendPort": 22,
-        "enableFloatingIP": false,
-        "frontendIPConfiguration": {
-          "id": "[variables('masterLbIPConfigID')]"
-        },
-        "frontendPort": "[variables('sshNatPorts')[copyIndex(variables('masterOffset'))]]",
-        "protocol": "Tcp"
-      },
-      "type": "Microsoft.Network/loadBalancers/inboundNatRules"
-    },
-    {
-      "apiVersion": "[variables('apiVersionNetwork')]",
-      "copy": {
-        "count": "[sub(variables('masterCount'), variables('masterOffset'))]",
         "name": "nicLoopNode"
       },
       "dependsOn": [
@@ -320,7 +346,7 @@
 {{else}}
         "[variables('vnetID')]",
 {{end}}
-        "[concat(variables('masterLbID'),'/inboundNatRules/SSH-',variables('masterVMNamePrefix'),copyIndex(variables('masterOffset')))]"
+        "[variables('masterLbName')]"
 {{if gt .MasterProfile.Count 1}}
         ,"[variables('masterInternalLbName')]"
 {{end}}
@@ -819,7 +845,7 @@
         "creationSource" : "[concat(parameters('generatorCode'), '-', variables('masterVMNamePrefix'), copyIndex(variables('masterOffset')))]",
         "resourceNameSuffix" : "[parameters('nameSuffix')]",
         "orchestrator" : "[variables('orchestratorNameVersionTag')]",
-        "acsengineVersion" : "[parameters('acsengineVersion')]",
+        "aksEngineVersion" : "[parameters('aksEngineVersion')]",
         "poolName" : "master"
       },
       "location": "[variables('location')]",
@@ -859,10 +885,13 @@
         },
         "osProfile": {
           "adminUsername": "[parameters('linuxAdminUsername')]",
-          "computername": "[concat(variables('masterVMNamePrefix'), copyIndex(variables('masterOffset')))]",
+          "computerName": "[concat(variables('masterVMNamePrefix'), copyIndex(variables('masterOffset')))]",
           {{GetKubernetesMasterCustomData .}}
           "linuxConfiguration": {
             "disablePasswordAuthentication": true,
+            {{if HasMultipleSshKeys }}
+            "ssh": {{ GetSshPublicKeys }}
+            {{ else }}
             "ssh": {
               "publicKeys": [
                 {
@@ -871,6 +900,7 @@
                 }
               ]
             }
+            {{ end }}
           }
           {{if .LinuxProfile.HasSecrets}}
           ,

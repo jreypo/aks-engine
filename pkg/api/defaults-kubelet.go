@@ -23,7 +23,6 @@ func (cs *ContainerService) setKubeletConfig() {
 		"--pod-manifest-path":           "/etc/kubernetes/manifests",
 		"--cluster-dns":                 o.KubernetesConfig.DNSServiceIP,
 		"--cgroups-per-qos":             "true",
-		"--enforce-node-allocatable":    "pods",
 		"--kubeconfig":                  "/var/lib/kubelet/kubeconfig",
 		"--keep-terminated-pod-volumes": "false",
 	}
@@ -47,6 +46,7 @@ func (cs *ContainerService) setKubeletConfig() {
 	staticWindowsKubeletConfig["--hairpin-mode"] = "promiscuous-bridge"
 	staticWindowsKubeletConfig["--image-pull-progress-deadline"] = "20m"
 	staticWindowsKubeletConfig["--resolv-conf"] = "\"\"\"\""
+	staticWindowsKubeletConfig["--eviction-hard"] = "\"\"\"\""
 
 	// Default Kubelet config
 	defaultKubeletConfig := map[string]string{
@@ -66,6 +66,7 @@ func (cs *ContainerService) setKubeletConfig() {
 		"--cadvisor-port":                   DefaultKubeletCadvisorPort,
 		"--pod-max-pids":                    strconv.Itoa(DefaultKubeletPodMaxPIDs),
 		"--image-pull-progress-deadline":    "30m",
+		"--enforce-node-allocatable":        "pods",
 	}
 
 	// Set --non-masquerade-cidr if ip-masq-agent is disabled on AKS

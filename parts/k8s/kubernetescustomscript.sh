@@ -2,6 +2,7 @@
 ERR_FILE_WATCH_TIMEOUT=6 # Timeout waiting for a file
 set -x
 echo `date`,`hostname`, startcustomscript>>/opt/m
+AZURE_STACK_ENV="azurestackcloud"
 
 script_lib=/opt/azure/containers/provision_source.sh
 for i in $(seq 1 3600); do
@@ -23,6 +24,12 @@ source $install_script
 config_script=/opt/azure/containers/provision_configs.sh
 wait_for_file 3600 1 $config_script || exit $ERR_FILE_WATCH_TIMEOUT
 source $config_script
+
+if [[ "${TARGET_ENVIRONMENT,,}" == "${AZURE_STACK_ENV}"  ]]; then 
+    config_script_custom_cloud=/opt/azure/containers/provision_configs_custom_cloud.sh
+    wait_for_file 3600 1 $config_script_custom_cloud || exit $ERR_FILE_WATCH_TIMEOUT
+    source $config_script_custom_cloud
+fi
 
 CUSTOM_SEARCH_DOMAIN_SCRIPT=/opt/azure/containers/setup-custom-search-domains.sh
 
@@ -46,7 +53,6 @@ if [ -f /var/log/azure/golden-image-install.complete ]; then
     echo "detected golden image pre-install"
     FULL_INSTALL_REQUIRED=false
     rm -rf /home/packer
-    cleanUpContainerImages
 else
     FULL_INSTALL_REQUIRED=true
 fi
@@ -72,7 +78,9 @@ fi
 
 installContainerRuntime
 installNetworkPlugin
-installContainerd
+if [[ "$CONTAINER_RUNTIME" == "clear-containers" ]] || [[ "$CONTAINER_RUNTIME" == "kata-containers" ]] || [[ "$CONTAINER_RUNTIME" == "containerd" ]]; then
+    installContainerd
+fi
 if [[ "${GPU_NODE}" = true ]]; then
     if $FULL_INSTALL_REQUIRED; then
         installGPUDrivers
@@ -82,6 +90,11 @@ fi
 installKubeletAndKubectl
 ensureRPC
 createKubeManifestDir
+if [[ "${SGX_NODE}" = true ]]; then
+    if $FULL_INSTALL_REQUIRED; then
+        installSGXDrivers
+    fi
+fi
 
 # create etcd user if we are configured for etcd
 if [[ ! -z "${MASTER_NODE}" ]] && [[ -z "${COSMOS_URI}" ]]; then
@@ -118,13 +131,20 @@ elif [[ "$CONTAINER_RUNTIME" == "kata-containers" ]]; then
 fi
 
 configureK8s
+
+if [[ "${TARGET_ENVIRONMENT,,}" == "${AZURE_STACK_ENV}"  ]]; then 
+    configureK8sCustomCloud
+fi
+
 configureCNI
 
 if [[ ! -z "${MASTER_NODE}" ]]; then
     configAddons
 fi
 
-ensureContainerd
+if [[ "$CONTAINER_RUNTIME" == "clear-containers" ]] || [[ "$CONTAINER_RUNTIME" == "kata-containers" ]] || [[ "$CONTAINER_RUNTIME" == "containerd" ]]; then
+    ensureContainerd
+fi
 
 if [[ ! -z "${MASTER_NODE}" && "${KMS_PROVIDER_VAULT_NAME}" != "" ]]; then
     ensureKMS
@@ -159,6 +179,10 @@ echo "Custom script finished successfully"
 echo `date`,`hostname`, endcustomscript>>/opt/m
 mkdir -p /opt/azure/containers && touch /opt/azure/containers/provision.complete
 ps auxfww > /opt/azure/provision-ps.log &
+
+if ! $FULL_INSTALL_REQUIRED; then
+    cleanUpContainerImages
+fi
 
 if $REBOOTREQUIRED; then
   echo 'reboot required, rebooting node in 1 minute'

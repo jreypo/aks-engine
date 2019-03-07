@@ -33,6 +33,7 @@ var commonTemplateFiles = []string{agentOutputs, agentParams, masterOutputs, iaa
 var dcosTemplateFiles = []string{dcosBaseFile, dcosAgentResourcesVMAS, dcosAgentResourcesVMSS, dcosAgentVars, dcosMasterResources, dcosMasterVars, dcosParams, dcosWindowsAgentResourcesVMAS, dcosWindowsAgentResourcesVMSS}
 var dcos2TemplateFiles = []string{dcos2BaseFile, dcosAgentResourcesVMAS, dcosAgentResourcesVMSS, dcosAgentVars, dcos2MasterResources, dcos2BootstrapResources, dcos2MasterVars, dcosParams, dcosWindowsAgentResourcesVMAS, dcosWindowsAgentResourcesVMSS, dcos2BootstrapVars, dcos2BootstrapParams}
 var kubernetesTemplateFiles = []string{kubernetesBaseFile, kubernetesAgentResourcesVMAS, kubernetesAgentResourcesVMSS, kubernetesAgentVars, kubernetesMasterResourcesVMAS, kubernetesMasterResourcesVMSS, kubernetesMasterVars, kubernetesParams, kubernetesWinAgentVars, kubernetesWinAgentVarsVMSS}
+var kubernetesParamFiles = []string{armParameters, kubernetesParams, masterParams, agentParams, windowsParams}
 var swarmTemplateFiles = []string{swarmBaseFile, swarmParams, swarmAgentResourcesVMAS, swarmAgentVars, swarmAgentResourcesVMSS, swarmBaseFile, swarmMasterResources, swarmMasterVars, swarmWinAgentResourcesVMAS, swarmWinAgentResourcesVMSS}
 var swarmModeTemplateFiles = []string{swarmBaseFile, swarmParams, swarmAgentResourcesVMAS, swarmAgentVars, swarmAgentResourcesVMSS, swarmBaseFile, swarmMasterResources, swarmMasterVars, swarmWinAgentResourcesVMAS, swarmWinAgentResourcesVMSS}
 
@@ -74,7 +75,7 @@ func GenerateKubeConfig(properties *api.Properties, location string) (string, er
 			kubeconfig = strings.Replace(kubeconfig, "{{WrapAsVerbatim \"reference(concat('Microsoft.Network/publicIPAddresses/', variables('masterPublicIPAddressName'))).dnsSettings.fqdn\"}}", properties.MasterProfile.FirstConsecutiveStaticIP, -1)
 		}
 	} else {
-		kubeconfig = strings.Replace(kubeconfig, "{{WrapAsVerbatim \"reference(concat('Microsoft.Network/publicIPAddresses/', variables('masterPublicIPAddressName'))).dnsSettings.fqdn\"}}", api.FormatAzureProdFQDNByLocation(properties.MasterProfile.DNSPrefix, location), -1)
+		kubeconfig = strings.Replace(kubeconfig, "{{WrapAsVerbatim \"reference(concat('Microsoft.Network/publicIPAddresses/', variables('masterPublicIPAddressName'))).dnsSettings.fqdn\"}}", api.FormatProdFQDNByLocation(properties.MasterProfile.DNSPrefix, location, properties.GetCustomCloudName()), -1)
 	}
 	kubeconfig = strings.Replace(kubeconfig, "{{WrapAsVariable \"resourceGroup\"}}", properties.MasterProfile.DNSPrefix, -1)
 
@@ -90,7 +91,7 @@ func GenerateKubeConfig(properties *api.Properties, location string) (string, er
 		}
 
 		authInfo = fmt.Sprintf("{\"auth-provider\":{\"name\":\"azure\",\"config\":{\"environment\":\"%v\",\"tenant-id\":\"%v\",\"apiserver-id\":\"%v\",\"client-id\":\"%v\"}}}",
-			helpers.GetCloudTargetEnv(location),
+			helpers.GetTargetEnv(location, properties.GetCustomCloudName()),
 			tenantID,
 			properties.AADProfile.ServerAppID,
 			properties.AADProfile.ClientAppID)
@@ -553,6 +554,7 @@ func getDataDisks(a *api.AgentPoolProfile) string {
               "createOption": "Empty",
               "diskSizeGB": "%d",
               "lun": %d,
+              "caching": "ReadOnly",
               "name": "[concat(variables('%sVMNamePrefix'), copyIndex(),'-datadisk%d')]",
               "vhd": {
                 "uri": "[concat('http://',variables('storageAccountPrefixes')[mod(add(add(div(copyIndex(),variables('maxVMsPerStorageAccount')),variables('%sStorageAccountOffset')),variables('dataStorageAccountPrefixSeed')),variables('storageAccountPrefixesCount'))],variables('storageAccountPrefixes')[div(add(add(div(copyIndex(),variables('maxVMsPerStorageAccount')),variables('%sStorageAccountOffset')),variables('dataStorageAccountPrefixSeed')),variables('storageAccountPrefixesCount'))],variables('%sDataAccountName'),'.blob.core.windows.net/vhds/',variables('%sVMNamePrefix'),copyIndex(), '--datadisk%d.vhd')]"
@@ -561,6 +563,7 @@ func getDataDisks(a *api.AgentPoolProfile) string {
 	managedDataDisks := `            {
               "diskSizeGB": "%d",
               "lun": %d,
+              "caching": "ReadOnly",
               "createOption": "Empty"
             }`
 	for i, diskSize := range a.DiskSizesGB {
@@ -644,6 +647,11 @@ func getBase64CustomScript(csFilename string) string {
 	return getBase64CustomScriptFromStr(csStr)
 }
 
+func getStringFromBase64(str string) (string, error) {
+	decodedBytes, err := base64.StdEncoding.DecodeString(str)
+	return string(decodedBytes), err
+}
+
 // getBase64CustomScript will return a base64 of the CSE
 func getBase64CustomScriptFromStr(str string) string {
 	var gzipB bytes.Buffer
@@ -717,7 +725,11 @@ func getContainerAddonsString(properties *api.Properties, sourcePath string) str
 		if setting.isEnabled {
 			var input string
 			if setting.rawScript != "" {
-				input = setting.rawScript
+				var err error
+				input, err = getStringFromBase64(setting.rawScript)
+				if err != nil {
+					return ""
+				}
 			} else {
 				orchProfile := properties.OrchestratorProfile
 				versions := strings.Split(orchProfile.OrchestratorVersion, ".")
